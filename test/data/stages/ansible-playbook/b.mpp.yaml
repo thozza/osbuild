@@ -1,0 +1,40 @@
+version: '2'
+sources:
+  org.osbuild.inline: {}
+pipelines:
+  - mpp-import-pipelines:
+      path: ../manifests/fedora-vars.ipp.yaml
+  - mpp-import-pipeline:
+      path: ../manifests/fedora-build-v2.ipp.yaml
+      id: build
+    runner:
+      mpp-format-string: org.osbuild.fedora{release}
+  - name: tree
+    build: name:build
+    stages:
+      - type: org.osbuild.rpm
+        inputs:
+          packages:
+            type: org.osbuild.files
+            origin: org.osbuild.source
+            mpp-depsolve:
+              architecture: $arch
+              module-platform-id: $module_platform_id
+              repos:
+                mpp-eval: repos
+              packages:
+                - "@core"
+        options:
+          gpgkeys:
+            mpp-eval: gpgkeys
+
+      - type: org.osbuild.ansible-playbook
+        inputs:
+          play_tarball:
+            type: org.osbuild.files
+            origin: org.osbuild.source
+            mpp-embed:
+              id: ansible-play.tar.xz
+              path: ./ansible-play.tar.xz
+        options:
+          playbook: main.yml

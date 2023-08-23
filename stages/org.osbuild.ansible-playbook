@@ -1,0 +1,83 @@
+#!/usr/bin/python3
+"""
+Execute ansible-playbook against the tree using the 'chroot' connection plugin.
+
+Notes:
+  - Requires 'chroot' in the buildroot.
+  - Requires 'tar' in the buildroot.
+  - Requires 'ansible-playbook' in the buildroot.
+  - Requires 'community.general.chroot' Ansible connection plugin.
+"""
+
+
+import os
+import subprocess
+import sys
+import shutil
+import tempfile
+
+import osbuild.api
+
+SCHEMA_2 = """
+"inputs": {
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["play_tarball"],
+  "properties": {
+    "play_tarball": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+},
+"options": {
+  "additionalProperties": false,
+  "properties": {
+    "playbook": {
+      "type": "string",
+      "description": "Playbook from the tarball to execute",
+      "default": "main.yml"
+    }
+  }
+}
+"""
+
+
+def parse_input(inputs):
+    tarball = inputs["play_tarball"]
+    files = tarball["data"]["files"]
+    assert len(files) == 1
+
+    filename, _ = files.popitem()
+    filepath = os.path.join(tarball["path"], filename)
+    return filepath
+
+
+def main(inputs, tree, options):
+    play_tarball = parse_input(inputs)
+    playbook = options.get("playbook", "main.yml")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        subprocess.run(["tar", "-C", tmpdir, "-xf", play_tarball], check=True)
+
+        cmd = [
+            "/usr/bin/ansible-playbook",
+            "--connection", "chroot",
+            "--inventory", f"{tree},",
+            playbook
+        ]
+
+        try:
+            subprocess.run(cmd, check=True, cwd=tmpdir, stdout=sys.stdout, stderr=sys.stderr)
+        finally:
+            # XXX: cleanup after Ansible
+            shutil.rmtree(f"{tree}/root/.ansible")
+            os.unlink(f"{tree}/dev/null")
+
+    return 0
+
+
+if __name__ == '__main__':
+    args = osbuild.api.arguments()
+    r = main(args["inputs"], args["tree"], args["options"])
+    sys.exit(r)
