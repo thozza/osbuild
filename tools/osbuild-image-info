@@ -2917,15 +2917,15 @@ def is_iso(path):
 
 
 def analyse_iso(path):
-    with tempfile.TemporaryDirectory(dir="/var/tmp") as tmp:
-        report = None
-        subprocess.run(["mount", "-o", "loop", path, tmp], check=True)
+    with mount(path, ["loop"]) as tmp:
+        liveimg_tarball = os.path.join(tmp, "liveimg.tar.gz")
+        if not os.path.exists(liveimg_tarball):
+            raise RuntimeError(f"Failed to find liveimg.tar.gz in ISO: {path}")
+
         try:
-            report = analyse_tarball(os.path.join(tmp, "liveimg.tar.gz"))
+            return analyse_tarball(liveimg_tarball)
         except Exception as e:
-            print(f"{e}", file=sys.stderr)
-        subprocess.run(["umount", tmp], check=True)
-        return report
+            raise RuntimeError(f"Failed to analyse ISO {path}: {e}") from e
 
 
 def main():
