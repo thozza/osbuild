@@ -1,3 +1,6 @@
+import os
+import subprocess
+
 import pytest
 
 from osbuild.testutil import make_fake_tree
@@ -135,3 +138,34 @@ grub_class fedora""",
 def test_read_boot_entries(tmp_path, fake_tree, entries):
     make_fake_tree(tmp_path, fake_tree)
     assert osbuild_image_info.read_boot_entries(tmp_path / "boot") == entries
+
+
+def make_fake_iso(iso_tree, output_dir) -> str:
+    iso_path = os.path.join(output_dir, "image.iso")
+    subprocess.run(["mkisofs", "-o", iso_path, "-R", "-J", iso_tree], check=True)
+    return iso_path
+
+
+@pytest.mark.skipif(os.getuid() != 0, reason="root only")
+def test_analyse_iso_fail_mount(tmp_path):
+    # fake ISO that can't be mounted
+    image_path = tmp_path / "image.iso"
+    image_path.touch()
+
+    with pytest.raises(
+            subprocess.CalledProcessError,
+            match=fr"^Command '\['mount', '\-o', 'ro,loop', PosixPath\('{image_path}'\)"):
+        osbuild_image_info.analyse_iso(image_path)
+
+
+@pytest.mark.skipif(os.getuid() != 0, reason="root only")
+def test_analyse_iso_fail_no_tarball(tmp_path):
+    # ISO that can be mounted, but doesn't contain the liveimg.tar.gz
+    iso_tree = tmp_path / "iso_tree"
+    iso_tree.mkdir()
+    image_path = make_fake_iso(iso_tree, tmp_path)
+
+    with pytest.raises(
+            RuntimeError,
+            match=f"^Failed to find liveimg.tar.gz in ISO: {image_path}$"):
+        osbuild_image_info.analyse_iso(image_path)
