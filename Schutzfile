@@ -2,7 +2,7 @@
   "global": {
     "dependencies": {
       "images": {
-        "ref": "main"
+        "ref": "download-build-cache-script"
       }
     }
   },

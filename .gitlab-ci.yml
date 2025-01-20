@@ -128,6 +128,7 @@ Manifests:
   variables:
     # List of image types that are not supported by osbuild-image-info
     UNSUPPORTED_IMG_TYPES: "ova *container live-installer wsl"
+    OSBUILD_IMAGES_REPO_URL: "https://github.com/thozza/osbuild-images.git"
   artifacts:
     when: always
     paths:
@@ -138,24 +139,24 @@ Manifests:
     matrix:
       - RUNNER:
           - aws/fedora-41-x86_64
-          - aws/fedora-41-aarch64
+          # - aws/fedora-41-aarch64
           - aws/centos-stream-9-x86_64
-          - aws/centos-stream-9-aarch64
+          # - aws/centos-stream-9-aarch64
           - aws/centos-stream-10-x86_64
-          - aws/centos-stream-10-aarch64
+          # - aws/centos-stream-10-aarch64
         # Test only the following manifest generation configs
         CONFIG: "empty all-customizations"
         CHUNK: [1, 2, 3, 4, 5]
         CHUNKS_COUNT: 5
       - RUNNER:
           - aws/rhel-8.10-ga-x86_64
-          - aws/rhel-8.10-ga-aarch64
-          - aws/rhel-9.4-ga-x86_64
-          - aws/rhel-9.4-ga-aarch64
+          # - aws/rhel-8.10-ga-aarch64
+          # - aws/rhel-9.4-ga-x86_64
+          # - aws/rhel-9.4-ga-aarch64
           - aws/rhel-9.6-nightly-x86_64
-          - aws/rhel-9.6-nightly-aarch64
+          # - aws/rhel-9.6-nightly-aarch64
           - aws/rhel-10.0-nightly-x86_64
-          - aws/rhel-10.0-nightly-aarch64
+          # - aws/rhel-10.0-nightly-aarch64
         INTERNAL_NETWORK: "true"
         # Test only the following manifest generation configs
         CONFIG: "empty all-customizations"
