@@ -59,7 +59,7 @@ def is_license_expression_available():
 
 
 def depsolve(transactions, cache_dir, dnf_config=None, repos=None, root_dir=None,
-             opt_metadata=None, with_sbom=False) -> Tuple[dict, int]:
+             opt_metadata=None, with_sbom=False, with_full_pkg_md=False) -> Tuple[dict, int]:
     if not repos and not root_dir:
         raise ValueError("At least one of 'repos' or 'root_dir' must be specified")
 
@@ -88,6 +88,9 @@ def depsolve(transactions, cache_dir, dnf_config=None, repos=None, root_dir=None
 
     if with_sbom:
         req["arguments"]["sbom"] = {"type": "spdx"}
+
+    if with_full_pkg_md:
+        req["arguments"]["full-pkg-md"] = True
 
     # If there is a config file, write it to a temporary file and pass it to the depsolver
     with TemporaryDirectory() as cfg_dir:
@@ -1612,6 +1615,60 @@ def test_depsolve_sbom(tmp_path, repo_servers, dnf_config, detect_fn, with_sbom,
 
     else:
         assert "sbom" not in res
+
+    use_dnf5 = dnf_config.get("use_dnf5", False)
+    if use_dnf5:
+        assert res["solver"] == "dnf5"
+    else:
+        assert res["solver"] == "dnf"
+
+
+# pylint: disable=too-many-branches
+@pytest.mark.parametrize("with_full_pkg_md", [False, True])
+@pytest.mark.parametrize("dnf_config, detect_fn", [
+    ({}, assert_dnf),
+    ({"use_dnf5": False}, assert_dnf),
+    ({"use_dnf5": True}, assert_dnf5),
+], ids=["no-config", "dnf4", "dnf5"])
+def test_depsolve_full_pkg_md(tmp_path, repo_servers, dnf_config, detect_fn, with_full_pkg_md):
+    try:
+        detect_fn()
+    except RuntimeError as e:
+        pytest.skip(str(e))
+
+    test_case = depsolve_test_case_basic_2pkgs_2repos
+    transactions = test_case["transactions"]
+    repo_configs = get_test_case_repo_configs(test_case, repo_servers)
+
+    res, exit_code = depsolve(transactions, tmp_path.as_posix(), dnf_config, repo_configs,
+                              with_full_pkg_md=with_full_pkg_md)
+
+    assert exit_code == 0
+    assert {pkg["name"] for pkg in res["packages"]} == test_case["results"]["packages"]
+    assert res["repos"].keys() == test_case["results"]["reponames"]
+
+    for repo in res["repos"].values():
+        assert repo["gpgkeys"] == [TEST_KEY + repo["id"]]
+        assert repo["sslverify"] is False
+
+    if with_full_pkg_md:
+        pkgs = res["packages"]
+        for pkg in pkgs:
+            assert "summary" in pkg and len(pkg["summary"]) > 0
+            assert "description" in pkg and len(pkg["description"]) > 0
+            assert "url" in pkg
+            assert "buildtime" in pkg and isinstance(pkg["buildtime"], str)
+            assert "license" in pkg and len(pkg["license"]) > 0
+            assert "vendor" in pkg and len(pkg["vendor"]) > 0
+            assert "source_rpm" in pkg and len(pkg["source_rpm"]) > 0
+            assert "files" in pkg
+            for relation in ["provides", "requires", "recommends", "suggests"]:
+                assert relation in pkg and isinstance(pkg[relation], list)
+                for item in pkg[relation]:
+                    assert isinstance(item, dict)
+                    assert "name" in item
+                    assert "relation" in item
+                    assert "version" in item
 
     use_dnf5 = dnf_config.get("use_dnf5", False)
     if use_dnf5:

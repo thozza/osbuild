@@ -264,12 +264,32 @@ class DNF(SolverBase):
                 })
         return packages
 
+    @staticmethod
+    def _hawkey_reldep_to_dict(reldep: hawkey.Reldep) -> Dict:
+        try:
+            return {
+                "name": reldep.name,
+                "relation": reldep.relation,
+                "version": reldep.version,
+            }
+        except AttributeError:
+            # '_hawkey.Reldep' object has no attribute 'name' in the version shipped on RHEL-8
+            dep_parts = str(reldep).split()
+            while len(dep_parts) < 3:
+                dep_parts.append("")
+            return {
+                "name": dep_parts[0],
+                "relation": dep_parts[1],
+                "version": dep_parts[2],
+            }
+
     def depsolve(self, arguments):
         # Return an empty list when 'transactions' key is missing or when it is None
         transactions = arguments.get("transactions") or []
         # collect repo IDs from the request so we know whether to translate gpg key paths
         request_repo_ids = set(repo["id"] for repo in arguments.get("repos", []))
         root_dir = arguments.get("root_dir")
+        full_pkg_md = arguments.get("full-pkg-md", False)
         last_transaction: List = []
 
         for transaction in transactions:
@@ -315,8 +335,9 @@ class DNF(SolverBase):
 
         packages = []
         pkg_repos = {}
+
         for package in last_transaction:
-            packages.append({
+            pkg = {
                 "name": package.name,
                 "epoch": package.epoch,
                 "version": package.version,
@@ -326,7 +347,22 @@ class DNF(SolverBase):
                 "path": package.relativepath,
                 "remote_location": package.remote_location(),
                 "checksum": f"{hawkey.chksum_name(package.chksum[0])}:{package.chksum[1].hex()}",
-            })
+            }
+            if full_pkg_md:
+                pkg["summary"] = package.summary
+                pkg["description"] = package.description
+                pkg["url"] = package.url
+                pkg["buildtime"] = self._timestamp_to_rfc3339(package.buildtime)
+                pkg["license"] = package.license
+                pkg['vendor'] = package.vendor
+                pkg['source_rpm'] = package.sourcerpm
+                pkg['provides'] = [self._hawkey_reldep_to_dict(prov) for prov in package.provides]
+                pkg['requires'] = [self._hawkey_reldep_to_dict(req) for req in package.requires]
+                pkg['recommends'] = [self._hawkey_reldep_to_dict(rec) for rec in package.recommends]
+                pkg['suggests'] = [self._hawkey_reldep_to_dict(sug) for sug in package.suggests]
+                pkg['files'] = package.files
+
+            packages.append(pkg)
             # collect repository objects by id to create the 'repositories' collection for the response
             pkgrepo = package.repo
             pkg_repos[pkgrepo.id] = pkgrepo

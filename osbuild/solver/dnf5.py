@@ -378,6 +378,14 @@ class DNF5(SolverBase):
                 })
         return packages
 
+    @staticmethod
+    def _libdnf5_reldep_to_dict(reldep: dnf5.rpm.Reldep) -> Dict:
+        return {
+            "name": reldep.get_name(),
+            "relation": reldep.get_relation(),
+            "version": reldep.get_version()
+        }
+
     def depsolve(self, arguments):
         """depsolve returns a list of the dependencies for the set of transactions
         """
@@ -386,6 +394,7 @@ class DNF5(SolverBase):
         # collect repo IDs from the request so we know whether to translate gpg key paths
         request_repo_ids = set(repo["id"] for repo in arguments.get("repos", []))
         root_dir = arguments.get("root_dir")
+        full_pkg_md = arguments.get("full-pkg-md", False)
         last_transaction: List = []
 
         for transaction in transactions:
@@ -431,7 +440,7 @@ class DNF5(SolverBase):
         packages = []
         pkg_repos = {}
         for package in last_transaction:
-            packages.append({
+            pkg = {
                 "name": package.get_name(),
                 "epoch": int(package.get_epoch()),
                 "version": package.get_version(),
@@ -441,7 +450,22 @@ class DNF5(SolverBase):
                 "path": package.get_location(),
                 "remote_location": remote_location(package),
                 "checksum": f"{package.get_checksum().get_type_str()}:{package.get_checksum().get_checksum()}",
-            })
+            }
+            if full_pkg_md:
+                pkg["summary"] = package.get_summary()
+                pkg["description"] = package.get_description()
+                pkg["url"] = package.get_url()
+                pkg["buildtime"] = self._timestamp_to_rfc3339(package.get_build_time())
+                pkg["license"] = package.get_license()
+                pkg['vendor'] = package.get_vendor()
+                pkg['source_rpm'] = package.get_sourcerpm()
+                pkg['provides'] = [self._libdnf5_reldep_to_dict(prov) for prov in package.get_provides()]
+                pkg['requires'] = [self._libdnf5_reldep_to_dict(req) for req in package.get_requires()]
+                pkg['recommends'] = [self._libdnf5_reldep_to_dict(rec) for rec in package.get_recommends()]
+                pkg['suggests'] = [self._libdnf5_reldep_to_dict(sug) for sug in package.get_suggests()]
+                pkg['files'] = package.get_files()
+
+            packages.append(pkg)
             # collect repository objects by id to create the 'repositories' collection for the response
             pkg_repo = package.get_repo()
             pkg_repos[pkg_repo.get_id()] = pkg_repo
