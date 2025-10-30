@@ -189,6 +189,78 @@ class RPMPackage:
             "checksum": str(self.checksum),
         }
 
+    # pylint: disable=too-many-branches
+    def _as_dict_v2(self):
+        """
+        Returns a dictionary representation of the RPM package for the v2 API response.
+        """
+        d = {
+            "name": self.name,
+            "epoch": self.epoch,
+            "version": self.version,
+            "release": self.release,
+            "arch": self.arch,
+        }
+        if self.group:
+            d["group"] = self.group
+        if self.download_size:
+            d["download_size"] = self.download_size
+        if self.install_size:
+            d["install_size"] = self.install_size
+        if self.license:
+            d["license"] = self.license
+        if self.source_rpm:
+            d["source_rpm"] = self.source_rpm
+        if self.build_time:
+            d["build_time"] = self.build_time
+        if self.packager:
+            d["packager"] = self.packager
+        if self.vendor:
+            d["vendor"] = self.vendor
+        if self.url:
+            d["url"] = self.url
+        if self.summary:
+            d["summary"] = self.summary
+        if self.description:
+            d["description"] = self.description
+        if self.provides:
+            d["provides"] = [dep.as_dict() for dep in self.provides]
+        if self.requires:
+            d["requires"] = [dep.as_dict() for dep in self.requires]
+        if self.requires_pre:
+            d["requires_pre"] = [dep.as_dict() for dep in self.requires_pre]
+        if self.conflicts:
+            d["conflicts"] = [dep.as_dict() for dep in self.conflicts]
+        if self.obsoletes:
+            d["obsoletes"] = [dep.as_dict() for dep in self.obsoletes]
+        if self.regular_requires:
+            d["regular_requires"] = [dep.as_dict() for dep in self.regular_requires]
+        if self.recommends:
+            d["recommends"] = [dep.as_dict() for dep in self.recommends]
+        if self.suggests:
+            d["suggests"] = [dep.as_dict() for dep in self.suggests]
+        if self.enhances:
+            d["enhances"] = [dep.as_dict() for dep in self.enhances]
+        if self.supplements:
+            d["supplements"] = [dep.as_dict() for dep in self.supplements]
+        if self.files:
+            d["files"] = self.files
+        if self.base_url:
+            d["base_url"] = self.base_url
+        if self.location:
+            d["location"] = self.location
+        if self.remote_locations:
+            d["remote_locations"] = self.remote_locations
+        if self.checksum:
+            d["checksum"] = self.checksum.as_dict()
+        if self.header_checksum:
+            d["header_checksum"] = self.header_checksum.as_dict()
+        if self.repo_id:
+            d["repo_id"] = self.repo_id
+        if self.reason:
+            d["reason"] = self.reason
+        return d
+
     def as_dict(self, command: SolverAPIResponseCommand) -> dict:
         """
         Returns a dictionary representation of the RPM package. The dictionary is intended to be used as a JSON object.
