@@ -1807,6 +1807,29 @@ def test_depsolve(tmp_path, repo_servers, dnf_config, detect_fn, test_case):
     )
 
 
+def check_dump_search_api_v1_response(res, expected_pkgs_count, pkg_check_fn=None):
+    """
+    Helper function to check the v1 API response of dump() and search().
+    """
+    assert len(res) == expected_pkgs_count
+    for pkg in res:
+        assert sorted(pkg.keys()) == [
+            "arch",
+            "buildtime",
+            "description",
+            "epoch",
+            "license",
+            "name",
+            "release",
+            "repo_id",
+            "summary",
+            "url",
+            "version",
+        ]
+        if pkg_check_fn:
+            pkg_check_fn(pkg)
+
+
 @pytest.mark.parametrize("test_case", dump_test_cases, ids=tcase_idfn)
 @pytest.mark.parametrize("dnf_config, detect_fn", [
     (None, assert_dnf),
@@ -1832,16 +1855,14 @@ def test_dump(tmp_path, repo_servers, dnf_config, detect_fn, test_case):
                 continue
 
             assert exit_code == 0
-            assert len(res) == test_case["packages_count"]
 
-            for res_pkg in res:
-                for key in ["arch", "buildtime", "description", "epoch", "license", "name", "release", "repo_id",
-                            "summary", "url", "version"]:
-                    assert key in res_pkg
-                if res_pkg["name"] == "pkg-with-no-deps":
-                    assert res_pkg["repo_id"] == "custom"
+            def pkg_check_fn(pkg):
+                if pkg["name"] == "pkg-with-no-deps":
+                    assert pkg["repo_id"] == "custom"
                 else:
-                    assert res_pkg["repo_id"] == "baseos"
+                    assert pkg["repo_id"] == "baseos"
+
+            check_dump_search_api_v1_response(res, test_case["packages_count"], pkg_check_fn)
 
             # if opt_metadata includes 'filelists', then each repository 'repodata' must include a file that matches
             # *filelists*
@@ -1876,6 +1897,9 @@ def test_search_config_combos(tmp_path, repo_servers, dnf_config, detect_fn):
             res, exit_code = search(search_args, cache_dir, dnf_config, repo_configs, root_dir, opt_metadata)
 
             assert exit_code == 0
+
+            check_dump_search_api_v1_response(res, len(test_case["results"]))
+
             for res, exp in zip(res, test_case["results"]):
                 # if the url in the package is empty, DNF4 returns None, DNF5 returns an empty string
                 exp = exp.copy()
@@ -1920,6 +1944,9 @@ def test_search(tmp_path, repo_servers, dnf_config, detect_fn, test_case):
         return
 
     assert exit_code == 0
+
+    check_dump_search_api_v1_response(res, len(test_case["results"]))
+
     for res, exp in zip(res, test_case["results"]):
         # if the url in the package is empty, DNF4 returns None, DNF5 returns an empty string
         exp = exp.copy()
