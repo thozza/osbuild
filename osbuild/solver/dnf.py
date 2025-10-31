@@ -5,7 +5,6 @@ import itertools
 import os
 import os.path
 import tempfile
-from datetime import datetime
 from typing import Dict, List
 
 import dnf
@@ -13,6 +12,7 @@ import hawkey
 import libdnf
 from dnf.i18n import ucd
 
+import osbuild.solver.model as api_model
 from osbuild.solver import (
     DepsolveError,
     MarkingError,
@@ -190,10 +190,6 @@ class DNF(SolverBase):
 
         return repo
 
-    @staticmethod
-    def _timestamp_to_rfc3339(timestamp):
-        return datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%dT%H:%M:%SZ')
-
     def _sbom_for_pkgset(self, pkgset: List[dnf.package.Package]) -> Dict:
         """
         Create an SBOM document for the given package set.
@@ -204,23 +200,117 @@ class DNF(SolverBase):
         spdx_doc = sbom_pkgset_to_spdx2_doc(pkgset, self.license_index_path)
         return spdx_doc.to_dict()
 
+    @staticmethod
+    def _hawkey_reldep_to_rpmdependency(reldep: hawkey.Reldep) -> api_model.RPMDependency:
+        """
+        Convert a hawkey.Reldep to an RPMDependency.
+        """
+        try:
+            return api_model.RPMDependency(reldep.name, reldep.relation, reldep.version)
+        except AttributeError:
+            # '_hawkey.Reldep' object has no attribute 'name' in the version shipped on RHEL-8
+            dep_parts = str(reldep).split()
+            while len(dep_parts) < 3:
+                dep_parts.append("")
+            return api_model.RPMDependency(dep_parts[0], dep_parts[1], dep_parts[2])
+
+    @staticmethod
+    def _dnf_pkg_to_rpmpackage(pkg: dnf.package.Package) -> api_model.RPMPackage:
+        kwargs = {
+            "name": pkg.name,
+            "version": pkg.version,
+            "release": pkg.release,
+            "arch": pkg.arch,
+        }
+        if pkg.epoch:
+            kwargs["epoch"] = pkg.epoch
+        if pkg.group:
+            kwargs["group"] = pkg.group
+        if pkg.downloadsize:
+            kwargs["download_size"] = pkg.downloadsize
+        if pkg.installsize:
+            kwargs["install_size"] = pkg.installsize
+        if pkg.license:
+            kwargs["license"] = pkg.license
+        if pkg.sourcerpm:
+            kwargs["source_rpm"] = pkg.sourcerpm
+        if pkg.buildtime:
+            kwargs["build_time"] = pkg.buildtime
+        if pkg.packager:
+            kwargs["packager"] = pkg.packager
+        if pkg.vendor:
+            kwargs["vendor"] = pkg.vendor
+        if pkg.url:
+            kwargs["url"] = pkg.url
+        if pkg.summary:
+            kwargs["summary"] = pkg.summary
+        if pkg.description:
+            kwargs["description"] = pkg.description
+        if pkg.provides:
+            kwargs["provides"] = [DNF._hawkey_reldep_to_rpmdependency(p) for p in pkg.provides]
+        if pkg.requires:
+            kwargs["requires"] = [DNF._hawkey_reldep_to_rpmdependency(p) for p in pkg.requires]
+        if pkg.requires_pre:
+            kwargs["requires_pre"] = [DNF._hawkey_reldep_to_rpmdependency(p) for p in pkg.requires_pre]
+        if pkg.conflicts:
+            kwargs["conflicts"] = [DNF._hawkey_reldep_to_rpmdependency(p) for p in pkg.conflicts]
+        if pkg.obsoletes:
+            kwargs["obsoletes"] = [DNF._hawkey_reldep_to_rpmdependency(p) for p in pkg.obsoletes]
+        if pkg.regular_requires:
+            kwargs["regular_requires"] = [DNF._hawkey_reldep_to_rpmdependency(p) for p in pkg.regular_requires]
+        if pkg.recommends:
+            kwargs["recommends"] = [DNF._hawkey_reldep_to_rpmdependency(p) for p in pkg.recommends]
+        if pkg.suggests:
+            kwargs["suggests"] = [DNF._hawkey_reldep_to_rpmdependency(p) for p in pkg.suggests]
+        if pkg.enhances:
+            kwargs["enhances"] = [DNF._hawkey_reldep_to_rpmdependency(p) for p in pkg.enhances]
+        if pkg.supplements:
+            kwargs["supplements"] = [DNF._hawkey_reldep_to_rpmdependency(p) for p in pkg.supplements]
+        if pkg.files:
+            kwargs["files"] = pkg.files
+        if pkg.baseurl:
+            kwargs["base_url"] = pkg.baseurl
+        if pkg.location:
+            kwargs["location"] = pkg.location
+        if pkg.remote_location():
+            kwargs["remote_locations"] = [pkg.remote_location()]
+        if pkg.chksum:
+            kwargs["checksum"] = api_model.Checksum(
+                checksum_type=hawkey.chksum_name(pkg.chksum[0]), value=pkg.chksum[1].hex())
+        if pkg.hdr_chksum:
+            kwargs["header_checksum"] = api_model.Checksum(
+                checksum_type=hawkey.chksum_name(pkg.hdr_chksum[0]), value=pkg.hdr_chksum[1].hex())
+        if pkg.repoid:
+            kwargs["repo_id"] = pkg.repoid
+        if pkg.reason:
+            kwargs["reason"] = pkg.reason
+        return api_model.RPMPackage(**kwargs)
+
+    def _dnf_repo_to_repository(self, repo: dnf.repo.Repo) -> api_model.Repository:
+        return api_model.Repository(
+            repo_id=repo.id,
+            name=repo.name,
+            baseurl=list(repo.baseurl),
+            metalink=repo.metalink,
+            mirrorlist=repo.mirrorlist,
+            gpgcheck=repo.gpgcheck,
+            repo_gpgcheck=repo.repo_gpgcheck,
+            gpgkeys=read_keys(repo.gpgkey, self.root_dir if repo.id not in self.request_repo_ids else None),
+            sslverify=bool(repo.sslverify),
+            sslcacert=repo.sslcacert,
+            sslclientkey=repo.sslclientkey,
+            sslclientcert=repo.sslclientcert,
+        )
+
     def dump(self):
         packages = []
-        for package in self.base.sack.query().available():
-            packages.append({
-                "name": package.name,
-                "summary": package.summary,
-                "description": package.description,
-                "url": package.url,
-                "repo_id": package.repoid,
-                "epoch": package.epoch,
-                "version": package.version,
-                "release": package.release,
-                "arch": package.arch,
-                "buildtime": self._timestamp_to_rfc3339(package.buildtime),
-                "license": package.license
-            })
-        return packages
+        repositories = {}
+        for pkg in self.base.sack.query().available():
+            packages.append(self._dnf_pkg_to_rpmpackage(pkg))
+            repositories[pkg.repo.id] = self._dnf_repo_to_repository(pkg.repo)
+        response = api_model.SolverAPIResponse(
+            packages=packages, repositories=list(repositories.values()), solver="dnf")
+        return response.as_dict(api_model.SolverAPIResponseCommand.DUMP)
 
     def search(self, args):
         """ Perform a search on the available packages
@@ -240,6 +330,7 @@ class DNF(SolverBase):
         pkg_globs = args.get("packages", [])
 
         packages = []
+        repositories = {}
 
         # NOTE: Build query one piece at a time, don't pass all to filterm at the same
         # time.
@@ -259,21 +350,13 @@ class DNF(SolverBase):
             if args.get("latest", False):
                 q = q.latest()
 
-            for package in q:
-                packages.append({
-                    "name": package.name,
-                    "summary": package.summary,
-                    "description": package.description,
-                    "url": package.url,
-                    "repo_id": package.repoid,
-                    "epoch": package.epoch,
-                    "version": package.version,
-                    "release": package.release,
-                    "arch": package.arch,
-                    "buildtime": self._timestamp_to_rfc3339(package.buildtime),
-                    "license": package.license
-                })
-        return packages
+            for pkg in q:
+                packages.append(self._dnf_pkg_to_rpmpackage(pkg))
+                repositories[pkg.repo.id] = self._dnf_repo_to_repository(pkg.repo)
+
+        response = api_model.SolverAPIResponse(
+            packages=packages, repositories=list(repositories.values()), solver="dnf")
+        return response.as_dict(api_model.SolverAPIResponseCommand.SEARCH)
 
     def depsolve(self, arguments):
         # Return an empty list when 'transactions' key is missing or when it is None
@@ -323,48 +406,14 @@ class DNF(SolverBase):
                 last_transaction.append(tsi.pkg)
 
         packages = []
-        pkg_repos = {}
+        repositories = {}
         for package in last_transaction:
-            packages.append({
-                "name": package.name,
-                "epoch": package.epoch,
-                "version": package.version,
-                "release": package.release,
-                "arch": package.arch,
-                "repo_id": package.repoid,
-                "path": package.relativepath,
-                "remote_location": package.remote_location(),
-                "checksum": f"{hawkey.chksum_name(package.chksum[0])}:{package.chksum[1].hex()}",
-            })
-            # collect repository objects by id to create the 'repositories' collection for the response
-            pkgrepo = package.repo
-            pkg_repos[pkgrepo.id] = pkgrepo
+            packages.append(self._dnf_pkg_to_rpmpackage(package))
+            repositories[package.repo.id] = self._dnf_repo_to_repository(package.repo)
 
-        repositories = {}  # full repository configs for the response
-        for repo in pkg_repos.values():
-            repositories[repo.id] = {
-                "id": repo.id,
-                "name": repo.name,
-                "baseurl": list(repo.baseurl) if repo.baseurl else None,
-                "metalink": repo.metalink,
-                "mirrorlist": repo.mirrorlist,
-                "gpgcheck": repo.gpgcheck,
-                "repo_gpgcheck": repo.repo_gpgcheck,
-                "gpgkeys": read_keys(repo.gpgkey, self.root_dir if repo.id not in self.request_repo_ids else None),
-                "sslverify": bool(repo.sslverify),
-                "sslcacert": repo.sslcacert,
-                "sslclientkey": repo.sslclientkey,
-                "sslclientcert": repo.sslclientcert,
-            }
-        response = {
-            "solver": "dnf",
-            "packages": packages,
-            "repos": repositories,
-            "modules": {},
-        }
-
+        sbom = None
         if "sbom" in arguments:
-            response["sbom"] = self._sbom_for_pkgset(last_transaction)
+            sbom = self._sbom_for_pkgset(last_transaction)
 
         # if any modules have been requested we add sources for these so they can
         # be used by stages to enable the modules in the eventual artifact
@@ -386,12 +435,12 @@ class DNF(SolverBase):
                 package_nevras = []
 
                 for package in packages:
-                    if package["epoch"] == 0:
+                    if package.epoch == 0:
                         package_nevras.append(
-                            f"{package['name']}-{package['version']}-{package['release']}.{package['arch']}")
+                            f"{package.name}-{package.version}-{package.release}.{package.arch}")
                     else:
                         package_nevras.append(
-                            f"{package['name']}-{package['epoch']}:{package['version']}-{package['release']}.{package['arch']}")
+                            f"{package.name}-{package.epoch}:{package.version}-{package.release}.{package.arch}")
 
                 for module_spec in itertools.chain(
                     transaction.get("module-enable-specs", []),
@@ -436,8 +485,9 @@ class DNF(SolverBase):
         # of the modulemd for the selected modules, this is to ensure that even when a
         # repository is disabled or disappears that non-modular content can't be installed
         # see: https://dnf.readthedocs.io/en/latest/modularity.html#fail-safe-mechanisms
+        modules_response = {}
         for module_ns, (module, profiles) in modules.items():
-            response["modules"][module.getName()] = {
+            modules_response[module.getName()] = {
                 "module-file": {
                     "path": f"/etc/dnf/modules.d/{module.getName()}.conf",
                     "data": {
@@ -453,4 +503,11 @@ class DNF(SolverBase):
                 },
             }
 
-        return response
+        response = api_model.SolverAPIResponse(
+            packages=packages,
+            repositories=list(repositories.values()),
+            solver="dnf",
+            modules=modules_response,
+            sbom=sbom,
+        )
+        return response.as_dict(api_model.SolverAPIResponseCommand.DEPSOLVE)
