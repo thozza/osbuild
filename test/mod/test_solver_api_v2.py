@@ -202,14 +202,14 @@ TEST_REPOSITORIES = [
 def test_transactions_to_disjoint_sets():
     """
     Test that the _transactions_to_disjoint_sets function converts a list
-    of transactions to a list of disjoint sets of packages.
+    of transactions to disjoint sets of packages.
     """
     transactions = [
         [TEST_PACKAGES[0]],
         [TEST_PACKAGES[0], TEST_PACKAGES[2]],
         TEST_PACKAGES,
     ]
-    disjoint_sets = _transactions_to_disjoint_sets(transactions)
+    disjoint_sets = list(_transactions_to_disjoint_sets(transactions))
     assert disjoint_sets == [
         [TEST_PACKAGES[0]],
         [TEST_PACKAGES[2]],

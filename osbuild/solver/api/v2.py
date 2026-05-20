@@ -7,7 +7,7 @@
 # was explicitly requested.
 
 import json
-from typing import Any, Dict, Iterable, List, Set, TextIO
+from typing import Any, Dict, Iterable, Iterator, List, Set, TextIO
 
 from osbuild.solver.exceptions import InvalidRequestError
 from osbuild.solver.model import (
@@ -155,15 +155,14 @@ def serialize_response_search(solver: str, result: SearchResult, writer: TextIO)
     writer.write("\n")
 
 
-def _transactions_to_disjoint_sets(transactions: Iterable[List[Package]]) -> List[List[Package]]:
+def _transactions_to_disjoint_sets(transactions: Iterable[List[Package]]) -> Iterator[List[Package]]:
     """
-    Convert a list of transactions to a list of disjoint sets of packages.
+    Convert transactions to disjoint sets of packages, yielding one at a time.
 
     Solver implementations always return transactions as supersets of the previous transaction results.
-    This function converts the transactions to a list of disjoint sets of packages, where each transaction result contains
+    This generator yields disjoint sets of packages, where each transaction result contains
     only the new "to be installed" packages.
     """
-    disjoint_sets: List[List[Package]] = []
     seen_packages: Set[Package] = set()
     for transaction in transactions:
         current_set = set(transaction)
@@ -172,8 +171,7 @@ def _transactions_to_disjoint_sets(transactions: Iterable[List[Package]]) -> Lis
         # NOTE: we sort the transaction to ensure that the transaction results are
         # kept sorted in the same way as the original transactions.
         disjoint_transaction.sort()
-        disjoint_sets.append(disjoint_transaction)
-    return disjoint_sets
+        yield disjoint_transaction
 
 
 def serialize_response_depsolve(solver: str, result: DepsolveResult, writer: TextIO) -> None:
@@ -254,23 +252,30 @@ def serialize_response_depsolve(solver: str, result: DepsolveResult, writer: Tex
     }
     """
 
-    transactions = _transactions_to_disjoint_sets(result.transactions)
-    transactions_as_dicts = []
-    for transaction in transactions:
-        transactions_as_dicts.append([_package_as_dict(package) for package in transaction])
-
-    d = {
-        "solver": solver,
-        "transactions": transactions_as_dicts,
-        "repos": {repository.repo_id: _repository_as_dict(repository) for repository in result.repositories},
-        "modules": result.modules or {},
-    }
-
+    writer.write('{"solver": ')
+    writer.write(json.dumps(solver))
+    writer.write(', "transactions": [')
+    first_transaction = True
+    for transaction in _transactions_to_disjoint_sets(result.transactions):
+        if not first_transaction:
+            writer.write(', ')
+        first_transaction = False
+        writer.write('[')
+        first_pkg = True
+        for package in transaction:
+            if not first_pkg:
+                writer.write(', ')
+            first_pkg = False
+            writer.write(json.dumps(_package_as_dict(package)))
+        writer.write(']')
+    writer.write('], "repos": ')
+    writer.write(json.dumps({r.repo_id: _repository_as_dict(r) for r in result.repositories}))
+    writer.write(', "modules": ')
+    writer.write(json.dumps(result.modules or {}))
     if result.sbom:
-        d["sbom"] = result.sbom
-
-    json.dump(d, writer)
-    writer.write("\n")
+        writer.write(', "sbom": ')
+        writer.write(json.dumps(result.sbom))
+    writer.write('}\n')
 
 
 # pylint: disable=too-many-branches
