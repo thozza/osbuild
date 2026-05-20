@@ -7,7 +7,6 @@ used by the solver: packages, repositories, dependencies, and checksums.
 These models are used internally by solver implementations and in API responses.
 """
 
-import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Type, Union
 
@@ -521,18 +520,26 @@ class Package(ValidatedModel):
 
 
 class DepsolveResult:
-    """Result of a depsolve operation."""
+    """Result of a depsolve operation.
+
+    Transactions are always consumed as a single-use iterator. Accessing
+    .repositories, .modules, or .sbom before fully consuming .transactions
+    raises RuntimeError.
+
+    When transactions is a generator, repositories/modules/sbom are collected
+    as side-effects of iterating transactions (via shared mutable references).
+    """
 
     def __init__(
         self,
-        transactions: List[List[Package]],
+        transactions: Iterable[List[Package]],
         repositories: List[Repository],
         modules: Optional[dict] = None,
         sbom: Optional[dict] = None
     ):
         """
         Args:
-            transactions: List of transaction results, each containing a list of packages that are a result of
+            transactions: Iterable of transaction results, each containing a list of packages that are a result of
                           dependency resolution. The order of transactions corresponds to the order of transactions
                           in the request. Each transaction result is a superset of the previous transaction result.
                           The package list in each transaction is expected to be alphabetically sorted by full NEVRA.
@@ -540,32 +547,42 @@ class DepsolveResult:
             modules: Optional dictionary of modules-related information.
             sbom: Optional SBOM document for the transaction.
         """
-        self.transactions = transactions
-        self.repositories = repositories
-        self.modules = modules
-        self.sbom = sbom
+        self._repositories = repositories
+        self._modules = modules
+        self._sbom = sbom
+        self._transactions_consumed = False
+        self.transactions: Iterable[List[Package]] = self._wrap_iter(transactions)
 
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, DepsolveResult):
-            return False
-        return (
-            self.transactions == other.transactions
-            and self.repositories == other.repositories
-            and self.modules == other.modules
-            and self.sbom == other.sbom
-        )
+    def _wrap_iter(self, it: Iterable[List[Package]]) -> Iterator[List[Package]]:
+        yield from it
+        self._transactions_consumed = True
 
-    def __hash__(self) -> int:
-        return hash((
-            tuple((tuple(transaction) for transaction in self.transactions)),
-            tuple(self.repositories),
-            json.dumps(self.modules, sort_keys=True) if self.modules else None,
-            json.dumps(self.sbom, sort_keys=True) if self.sbom else None,
-        ))
+    @property
+    def repositories(self) -> List[Repository]:
+        if not self._transactions_consumed:
+            raise RuntimeError(
+                "DepsolveResult.repositories must not be accessed before "
+                "transactions have been fully iterated"
+            )
+        return self._repositories
 
-    def __repr__(self) -> str:
-        return f"DepsolveResult(transactions={self.transactions}, repositories={self.repositories}, " \
-            f"modules={self.modules}, sbom={self.sbom})"
+    @property
+    def modules(self) -> Optional[dict]:
+        if not self._transactions_consumed:
+            raise RuntimeError(
+                "DepsolveResult.modules must not be accessed before "
+                "transactions have been fully iterated"
+            )
+        return self._modules
+
+    @property
+    def sbom(self) -> Optional[dict]:
+        if not self._transactions_consumed:
+            raise RuntimeError(
+                "DepsolveResult.sbom must not be accessed before "
+                "transactions have been fully iterated"
+            )
+        return self._sbom
 
 
 class DumpResult:

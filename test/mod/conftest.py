@@ -8,6 +8,39 @@ from osbuild.solver.model import Repository
 from osbuild.solver.request import SolverConfig
 
 
+def assert_depsolve_result_equal(result1, result2):
+    """
+    Assert that two depsolve results are equal.
+
+    Iterates both results' transactions in lockstep, then compares
+    repositories, modules, and sbom after all transactions are consumed.
+    """
+    it1 = iter(result1.transactions)
+    it2 = iter(result2.transactions)
+    sentinel = object()
+    tx_idx = 0
+    while True:
+        tx1 = next(it1, sentinel)
+        tx2 = next(it2, sentinel)
+        if tx1 is sentinel and tx2 is sentinel:
+            break
+        assert tx1 is not sentinel, f"result1 has fewer transactions than result2 (at index {tx_idx})"
+        assert tx2 is not sentinel, f"result2 has fewer transactions than result1 (at index {tx_idx})"
+        assert len(tx1) == len(tx2), (
+            f"Transaction {tx_idx}: result1 has {len(tx1)} packages, result2 has {len(tx2)}"
+        )
+        for pkg1, pkg2 in zip(tx1, tx2):
+            assert_object_equal(pkg1, pkg2)
+        tx_idx += 1
+    assert_object_equal(result1.repositories, result2.repositories)
+    assert result1.modules == result2.modules, (
+        f"modules differ:\n  result1: {result1.modules}\n  result2: {result2.modules}"
+    )
+    assert result1.sbom == result2.sbom, (
+        f"sbom differ:\n  result1: {result1.sbom}\n  result2: {result2.sbom}"
+    )
+
+
 def assert_dump_result_equal(result1, result2):
     """
     Assert that two dump results are equal.

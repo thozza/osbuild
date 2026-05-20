@@ -343,180 +343,187 @@ class DNF(SolverBase):
 
     def depsolve(self, args: DepsolveCmdArgs) -> model.DepsolveResult:
         """Perform a dependency resolution for the given transactions"""
-        last_dnf_transaction: List[dnf.package.Package] = []
-        # List of transaction results, each containing a list of packages that are a result of dependency resolution.
-        # Each transaction result is a superset of the previous transaction result.
-        # The package list in each transaction is alphabetically sorted by full NEVRA.
-        transactions_results: List[List[model.Package]] = []
-        repositories_by_id: Dict[str, model.Repository] = {}
         repositories: List[model.Repository] = []
+        modules_dict: Dict[str, Any] = {}
+        sbom_dict: Dict = {}
 
-        for transaction in args.transactions:
-            self.base.reset(goal=True)
-            self.base.sack.reset_excludes()
+        # pylint: disable=too-many-statements
+        def transaction_iter():
+            last_dnf_transaction: List[dnf.package.Package] = []
+            repositories_by_id: Dict[str, model.Repository] = {}
+            last_transaction_result: List[model.Package] = []
 
-            # Restrict dependency resolution to only use packages from the
-            # repos listed in repo_ids by excluding all packages from other
-            # repos from the sack. The reponame parameter of install_specs()
-            # only filters the explicitly requested packages, not their
-            # dependencies.
-            if transaction.repo_ids:
-                allowed_repo_ids = set(transaction.repo_ids)
-                for repo in self.base.repos.iter_enabled():
-                    if repo.id not in allowed_repo_ids:
-                        q = self.base.sack.query().available().filterm(reponame=repo.id)
-                        self.base.sack.add_excludes(q)
+            for transaction in args.transactions:
+                self.base.reset(goal=True)
+                self.base.sack.reset_excludes()
 
-            self.base.conf.install_weak_deps = transaction.install_weak_deps
+                # Restrict dependency resolution to only use packages from the
+                # repos listed in repo_ids by excluding all packages from other
+                # repos from the sack. The reponame parameter of install_specs()
+                # only filters the explicitly requested packages, not their
+                # dependencies.
+                if transaction.repo_ids:
+                    allowed_repo_ids = set(transaction.repo_ids)
+                    for repo in self.base.repos.iter_enabled():
+                        if repo.id not in allowed_repo_ids:
+                            q = self.base.sack.query().available().filterm(reponame=repo.id)
+                            self.base.sack.add_excludes(q)
 
-            try:
-                # set the packages from the last transaction as installed
-                for installed_pkg in last_dnf_transaction:
-                    self.base.package_install(installed_pkg, strict=True)
+                self.base.conf.install_weak_deps = transaction.install_weak_deps
 
-                # enabling a module means that packages can be installed from that
-                # module
-                if transaction.module_enable_specs:
-                    self.base_module.enable(transaction.module_enable_specs)
+                try:
+                    # set the packages from the last transaction as installed
+                    for installed_pkg in last_dnf_transaction:
+                        self.base.package_install(installed_pkg, strict=True)
 
-                # installing a module takes the specification of the module and then
-                # installs all packages belonging to its default group, modules to
-                # install are listed directly in `package-specs` but prefixed with an
-                # `@` *and* containing a `:` this is up to the user of the depsolver
-                self.base.install_specs(
-                    transaction.package_specs,
-                    transaction.exclude_specs,
-                )
-            except dnf.exceptions.Error as e:
-                raise MarkingError(e) from e
+                    # enabling a module means that packages can be installed from that
+                    # module
+                    if transaction.module_enable_specs:
+                        self.base_module.enable(transaction.module_enable_specs)
 
-            try:
-                self.base.resolve()
-            except dnf.exceptions.Error as e:
-                raise DepsolveError(e) from e
+                    # installing a module takes the specification of the module and then
+                    # installs all packages belonging to its default group, modules to
+                    # install are listed directly in `package-specs` but prefixed with an
+                    # `@` *and* containing a `:` this is up to the user of the depsolver
+                    self.base.install_specs(
+                        transaction.package_specs,
+                        transaction.exclude_specs,
+                    )
+                except dnf.exceptions.Error as e:
+                    raise MarkingError(e) from e
 
-            transaction_result = []
-            # store the current transaction result
-            last_dnf_transaction.clear()
-            for tsi in self.base.transaction:
-                # NB: we don't use the 'install_set' helper, because it is a Python set() and it
-                # does not guarantee a stable order.
-                if tsi.action not in dnf.transaction.FORWARD_ACTIONS:
-                    continue
-                pkg = tsi.pkg
-                last_dnf_transaction.append(pkg)
-                transaction_result.append(_dnf_pkg_to_package(pkg))
-                repo = pkg.repo
-                if repo.id not in repositories_by_id:
-                    repositories_by_id[repo.id] = self._dnf_repo_to_repository(repo)
+                try:
+                    self.base.resolve()
+                except dnf.exceptions.Error as e:
+                    raise DepsolveError(e) from e
 
-            # NB: DNF4 solver returns packages in alphabetical order. However, to not depend on the DNF4 API
-            # implementation details, we explicitly sort the packages alphabetically by full NEVRA.
-            # NB: the org.osbuild.rpm stage as generated by osbuild/images does not depend on the order of packages,
-            # because rpm gets the full package set at once and it will reorder the packages as needed when installing.
-            transaction_result.sort()
-            transactions_results.append(transaction_result)
+                transaction_result = []
+                # store the current transaction result
+                last_dnf_transaction.clear()
+                for tsi in self.base.transaction:
+                    # NB: we don't use the 'install_set' helper, because it is a Python set() and it
+                    # does not guarantee a stable order.
+                    if tsi.action not in dnf.transaction.FORWARD_ACTIONS:
+                        continue
+                    pkg = tsi.pkg
+                    last_dnf_transaction.append(pkg)
+                    transaction_result.append(_dnf_pkg_to_package(pkg))
+                    repo = pkg.repo
+                    if repo.id not in repositories_by_id:
+                        repositories_by_id[repo.id] = self._dnf_repo_to_repository(repo)
 
-        # NB: we sort the repositories by repo_id to ensure consistent ordering across DNF4 and DNF5.
-        repositories = list(repositories_by_id.values())
-        repositories.sort(key=lambda x: x.repo_id)
+                # NB: DNF4 solver returns packages in alphabetical order. However, to not depend on the DNF4 API
+                # implementation details, we explicitly sort the packages alphabetically by full NEVRA.
+                # NB: the org.osbuild.rpm stage as generated by osbuild/images does not depend on the order of
+                # packages, because rpm gets the full package set at once and it will reorder the packages as
+                # needed when installing.
+                transaction_result.sort()
+                last_transaction_result = transaction_result
+                yield transaction_result
 
-        sbom = None
-        if args.sbom_request:
-            sbom = self._sbom_for_pkgset(last_dnf_transaction)
+            # Finalization after all transactions have been yielded
 
-        # if any modules have been requested we add sources for these so they can
-        # be used by stages to enable the modules in the eventual artifact
-        modules: Dict[str, Any] = {}
+            # NB: we sort the repositories by repo_id to ensure consistent ordering across DNF4 and DNF5.
+            repos_sorted = sorted(repositories_by_id.values(), key=lambda x: x.repo_id)
+            repositories.extend(repos_sorted)
 
-        for transaction in args.transactions:
-            # module specifications must start with an "@", if they do we try to
-            # ask DNF for a module by that name, if it doesn't exist it isn't a
-            # module; otherwise it is and we should use it
-            modules_in_package_specs = []
+            if args.sbom_request:
+                sbom_dict.update(self._sbom_for_pkgset(last_dnf_transaction))
 
-            for p in transaction.package_specs:
-                if p.startswith("@") and self.base_module.get_modules(p):
-                    modules_in_package_specs.append(p.lstrip("@"))
+            # if any modules have been requested we add sources for these so they can
+            # be used by stages to enable the modules in the eventual artifact
+            modules: Dict[str, Any] = {}
 
-            if transaction.module_enable_specs or modules_in_package_specs:
-                # we'll be checking later if any packages-from-modules are in the
-                # packages-to-install set so let's do this only once here
-                package_nevras = []
+            for transaction in args.transactions:
+                # module specifications must start with an "@", if they do we try to
+                # ask DNF for a module by that name, if it doesn't exist it isn't a
+                # module; otherwise it is and we should use it
+                modules_in_package_specs = []
 
-                # NB: len(transactions_results) == len(args.transactions), so transactions_results can't be empty.
-                for package in transactions_results[-1]:
-                    if package.epoch == 0:
-                        package_nevras.append(
-                            f"{package.name}-{package.version}-{package.release}.{package.arch}")
-                    else:
-                        package_nevras.append(
-                            f"{package.name}-{package.epoch}:{package.version}-{package.release}.{package.arch}")
+                for p in transaction.package_specs:
+                    if p.startswith("@") and self.base_module.get_modules(p):
+                        modules_in_package_specs.append(p.lstrip("@"))
 
-                for module_spec in itertools.chain(
-                    transaction.module_enable_specs or [],
-                    modules_in_package_specs,
-                ):
-                    module_packages, module_nsvcap = self.base_module.get_modules(module_spec)
+                if transaction.module_enable_specs or modules_in_package_specs:
+                    # we'll be checking later if any packages-from-modules are in the
+                    # packages-to-install set so let's do this only once here
+                    package_nevras = []
 
-                    # we now need to do an annoying dance as multiple modules could be
-                    # returned by `.get_modules`, we need to select the *same* one as
-                    # previously selected. we do this by checking if any of the module
-                    # packages are in the packages set marked for installation.
+                    for package in last_transaction_result:
+                        if package.epoch == 0:
+                            package_nevras.append(
+                                f"{package.name}-{package.version}-{package.release}.{package.arch}")
+                        else:
+                            package_nevras.append(
+                                f"{package.name}-{package.epoch}:{package.version}-{package.release}.{package.arch}")
 
-                    # this is a result of not being able to get the enabled modules
-                    # from the transaction, if that turns out to be possible then
-                    # we can get rid of these shenanigans
-                    for module_package in module_packages:
-                        module_nevras = module_package.getArtifacts()
+                    for module_spec in itertools.chain(
+                        transaction.module_enable_specs or [],
+                        modules_in_package_specs,
+                    ):
+                        module_packages, module_nsvcap = self.base_module.get_modules(module_spec)
 
-                        if any(module_nevra in package_nevras for module_nevra in module_nevras):
-                            # a package from this module is being installed so we must
-                            # use this module
-                            module_ns = f"{module_nsvcap.name}:{module_nsvcap.stream}"
+                        # we now need to do an annoying dance as multiple modules could be
+                        # returned by `.get_modules`, we need to select the *same* one as
+                        # previously selected. we do this by checking if any of the module
+                        # packages are in the packages set marked for installation.
 
-                            if module_ns not in modules:
-                                modules[module_ns] = (module_package, set())
+                        # this is a result of not being able to get the enabled modules
+                        # from the transaction, if that turns out to be possible then
+                        # we can get rid of these shenanigans
+                        for module_package in module_packages:
+                            module_nevras = module_package.getArtifacts()
 
-                            if module_nsvcap.profile:
-                                modules[module_ns][1].add(module_nsvcap.profile)
+                            if any(module_nevra in package_nevras for module_nevra in module_nevras):
+                                # a package from this module is being installed so we must
+                                # use this module
+                                module_ns = f"{module_nsvcap.name}:{module_nsvcap.stream}"
 
-                            # we are unable to skip the rest of the `module_packages`
-                            # here since different profiles might be contained
+                                if module_ns not in modules:
+                                    modules[module_ns] = (module_package, set())
 
-        # now we have the information we need about modules so we need to return *some*
-        # information to who is using the depsolver so they can use that information to
-        # enable these modules in the artifact
+                                if module_nsvcap.profile:
+                                    modules[module_ns][1].add(module_nsvcap.profile)
 
-        # there are two files that matter for each module that is used, the caller needs
-        # to write a file to `/etc/dnf/modules.d/{module_name}.module` to enable the
-        # module for dnf
+                                # we are unable to skip the rest of the `module_packages`
+                                # here since different profiles might be contained
 
-        # the caller also needs to set up `/var/lib/dnf/modulefailsafe/` with the contents
-        # of the modulemd for the selected modules, this is to ensure that even when a
-        # repository is disabled or disappears that non-modular content can't be installed
-        # see: https://dnf.readthedocs.io/en/latest/modularity.html#fail-safe-mechanisms
-        modules_response = {}
-        for module_ns, (module, profiles) in modules.items():
-            modules_response[module.getName()] = {
-                "module-file": {
-                    "path": f"/etc/dnf/modules.d/{module.getName()}.conf",
-                    "data": {
-                        "name": module.getName(),
-                        "stream": module.getStream(),
-                        "profiles": list(profiles),
-                        "state": "enabled",
-                    }
-                },
-                "failsafe-file": {
-                    "data": module.getYaml(),
-                    "path": f"/var/lib/dnf/modulefailsafe/{module.getName()}:{module.getStream()}",
-                },
-            }
+            # now we have the information we need about modules so we need to return *some*
+            # information to who is using the depsolver so they can use that information to
+            # enable these modules in the artifact
+
+            # there are two files that matter for each module that is used, the caller needs
+            # to write a file to `/etc/dnf/modules.d/{module_name}.module` to enable the
+            # module for dnf
+
+            # the caller also needs to set up `/var/lib/dnf/modulefailsafe/` with the contents
+            # of the modulemd for the selected modules, this is to ensure that even when a
+            # repository is disabled or disappears that non-modular content can't be installed
+            # see: https://dnf.readthedocs.io/en/latest/modularity.html#fail-safe-mechanisms
+            modules_response = {}
+            for module_ns, (module, profiles) in modules.items():
+                modules_response[module.getName()] = {
+                    "module-file": {
+                        "path": f"/etc/dnf/modules.d/{module.getName()}.conf",
+                        "data": {
+                            "name": module.getName(),
+                            "stream": module.getStream(),
+                            "profiles": list(profiles),
+                            "state": "enabled",
+                        }
+                    },
+                    "failsafe-file": {
+                        "data": module.getYaml(),
+                        "path": f"/var/lib/dnf/modulefailsafe/{module.getName()}:{module.getStream()}",
+                    },
+                }
+
+            if modules_response:
+                modules_dict.update(modules_response)
 
         return model.DepsolveResult(
-            transactions=transactions_results,
+            transactions=transaction_iter(),
             repositories=repositories,
-            modules=modules_response if modules_response else None,
-            sbom=sbom if sbom else None,
+            modules=modules_dict,
+            sbom=sbom_dict if args.sbom_request else None,
         )

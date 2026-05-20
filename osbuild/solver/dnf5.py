@@ -448,113 +448,116 @@ class DNF5(SolverBase):
 
     def depsolve(self, args: DepsolveCmdArgs) -> model.DepsolveResult:
         """Perform a dependency resolution for the given transactions"""
-        last_dnf_transaction: List[dnf5.rpm.Package] = []
-        # List of transaction results, each containing a list of packages that are a result of dependency resolution.
-        # Each transaction result is a superset of the previous transaction result.
-        # The package list in each transaction is alphabetically sorted by full NEVRA.
-        transactions_results: List[List[model.Package]] = []
-        repositories_by_id: Dict[str, model.Repository] = {}
         repositories: List[model.Repository] = []
+        sbom_dict: Dict = {}
 
-        for transaction in args.transactions:
-            goal = dnf5.base.Goal(self.base)
-            goal.reset()
-            sack = self.base.get_rpm_package_sack()
-            sack.clear_user_excludes()
+        def transaction_iter():
+            last_dnf_transaction: List[dnf5.rpm.Package] = []
+            repositories_by_id: Dict[str, model.Repository] = {}
+            last_result_count = 0
 
-            # Restrict dependency resolution to only use packages from the
-            # repos listed in repo_ids by excluding all packages from other
-            # repos from the sack. Without this, dependencies would be
-            # resolved from all enabled repos regardless of repo_ids.
-            if transaction.repo_ids:
-                allowed_repo_ids = set(transaction.repo_ids)
-                rq = dnf5.repo.RepoQuery(self.base)
-                rq.filter_enabled(True)
-                # libdnf5's RepoQuery doesn't support Python iteration
-                repo_iter = rq.begin()
-                while repo_iter != rq.end():
-                    repo = repo_iter.value()
-                    if repo.get_id() not in allowed_repo_ids:
+            for transaction in args.transactions:
+                goal = dnf5.base.Goal(self.base)
+                goal.reset()
+                sack = self.base.get_rpm_package_sack()
+                sack.clear_user_excludes()
+
+                # Restrict dependency resolution to only use packages from the
+                # repos listed in repo_ids by excluding all packages from other
+                # repos from the sack. Without this, dependencies would be
+                # resolved from all enabled repos regardless of repo_ids.
+                if transaction.repo_ids:
+                    allowed_repo_ids = set(transaction.repo_ids)
+                    rq = dnf5.repo.RepoQuery(self.base)
+                    rq.filter_enabled(True)
+                    # libdnf5's RepoQuery doesn't support Python iteration
+                    repo_iter = rq.begin()
+                    while repo_iter != rq.end():
+                        repo = repo_iter.value()
+                        if repo.get_id() not in allowed_repo_ids:
+                            q = dnf5.rpm.PackageQuery(self.base)
+                            q.filter_available()
+                            q.filter_repo_id([repo.get_id()], EQ)
+                            sack.add_user_excludes(q)
+                        repo_iter.next()
+
+                # weak deps are selected per-transaction
+                self.base.get_config().install_weak_deps = transaction.install_weak_deps
+
+                # set the packages from the last transaction as installed
+                for installed_pkg in last_dnf_transaction:
+                    goal.add_rpm_install(installed_pkg)
+
+                # NOTE: DNF4's install_specs() accepts exclude_specs directly and handles exclusion internally using
+                # sack.add_excludes(). DNF5's Goal API has no equivalent -- add_install() only accepts package specs,
+                # not excludes. To achieve the same effect, we explicitly exclude matching packages from the sack using
+                # sack.add_user_excludes(), the same mechanism used for repo_ids filtering above. The excludes are
+                # scoped per-transaction because sack.clear_user_excludes() is called at the start of each iteration.
+                # This block is placed after add_rpm_install() (which re-adds packages from previous transactions) to
+                # match DNF4's ordering, where package_install() precedes install_specs(). Note that sack-level
+                # excludes do not affect packages already added to the goal via add_rpm_install(), so excludes only
+                # influence the resolution of newly requested packages.
+                if transaction.exclude_specs:
+                    for exclude_spec in transaction.exclude_specs:
                         q = dnf5.rpm.PackageQuery(self.base)
                         q.filter_available()
-                        q.filter_repo_id([repo.get_id()], EQ)
+                        q.filter_name([exclude_spec], GLOB)
                         sack.add_user_excludes(q)
-                    repo_iter.next()
 
-            # weak deps are selected per-transaction
-            self.base.get_config().install_weak_deps = transaction.install_weak_deps
+                # Support group/environment names as well as ids
+                settings = dnf5.base.GoalJobSettings()
+                settings.group_with_name = True
 
-            # set the packages from the last transaction as installed
-            for installed_pkg in last_dnf_transaction:
-                goal.add_rpm_install(installed_pkg)
+                for package_spec in transaction.package_specs:
+                    goal.add_install(package_spec, settings)
+                goal_result = goal.resolve()
 
-            # NOTE: DNF4's install_specs() accepts exclude_specs directly and handles exclusion internally using
-            # sack.add_excludes(). DNF5's Goal API has no equivalent -- add_install() only accepts package specs,
-            # not excludes. To achieve the same effect, we explicitly exclude matching packages from the sack using
-            # sack.add_user_excludes(), the same mechanism used for repo_ids filtering above. The excludes are scoped
-            # per-transaction because sack.clear_user_excludes() is called at the start of each iteration. This block
-            # is placed after add_rpm_install() (which re-adds packages from previous transactions) to match DNF4's
-            # ordering, where package_install() precedes install_specs(). Note that sack-level excludes do not affect
-            # packages already added to the goal via add_rpm_install(), so excludes only influence the resolution
-            # of newly requested packages.
-            if transaction.exclude_specs:
-                for exclude_spec in transaction.exclude_specs:
-                    q = dnf5.rpm.PackageQuery(self.base)
-                    q.filter_available()
-                    q.filter_name([exclude_spec], GLOB)
-                    sack.add_user_excludes(q)
+                transaction_problems = goal_result.get_problems()
+                if transaction_problems != NO_PROBLEM:
+                    error_msg = "\n".join(goal_result.get_resolve_logs_as_strings())
+                    if not (transaction_problems & ~MARKING_PROBLEMS):
+                        raise MarkingError(error_msg)
+                    raise DepsolveError(error_msg)
 
-            # Support group/environment names as well as ids
-            settings = dnf5.base.GoalJobSettings()
-            settings.group_with_name = True
+                transaction_result = []
+                # store the current transaction result
+                last_dnf_transaction.clear()
+                for tsi in goal_result.get_transaction_packages():
+                    # Only add packages being installed, upgraded, downgraded, or reinstalled
+                    if not dnf5.base.transaction.transaction_item_action_is_inbound(tsi.get_action()):
+                        continue
+                    pkg = tsi.get_package()
+                    last_dnf_transaction.append(pkg)
+                    transaction_result.append(_dnf_pkg_to_package(pkg))
+                    if pkg.get_repo().get_id() not in repositories_by_id:
+                        repositories_by_id[pkg.get_repo().get_id()] = self._dnf_repo_to_repository(pkg.get_repo())
 
-            for package_spec in transaction.package_specs:
-                goal.add_install(package_spec, settings)
-            goal_result = goal.resolve()
+                # NB: DNF5 solver returns packages in topological order, but the original DNF4 solver returns
+                # alphabetically sorted packages. To be consistent and match the original DNF4 solver behavior,
+                # we sort the packages alphabetically by full NEVRA.
+                # NB: the org.osbuild.rpm stage as generated by osbuild/images does not depend on the order of
+                # packages, because rpm gets the full package set at once and it will reorder the packages as
+                # needed when installing.
+                transaction_result.sort()
+                last_result_count = len(transaction_result)
+                yield transaction_result
 
-            transaction_problems = goal_result.get_problems()
-            if transaction_problems != NO_PROBLEM:
-                error_msg = "\n".join(goal_result.get_resolve_logs_as_strings())
-                if not (transaction_problems & ~MARKING_PROBLEMS):
-                    raise MarkingError(error_msg)
-                raise DepsolveError(error_msg)
+            # Finalization after all transactions have been yielded
 
-            transaction_result = []
-            # store the current transaction result
-            last_dnf_transaction.clear()
-            for tsi in goal_result.get_transaction_packages():
-                # Only add packages being installed, upgraded, downgraded, or reinstalled
-                if not dnf5.base.transaction.transaction_item_action_is_inbound(tsi.get_action()):
-                    continue
-                pkg = tsi.get_package()
-                last_dnf_transaction.append(pkg)
-                transaction_result.append(_dnf_pkg_to_package(pkg))
-                if pkg.get_repo().get_id() not in repositories_by_id:
-                    repositories_by_id[pkg.get_repo().get_id()] = self._dnf_repo_to_repository(pkg.get_repo())
+            # NB: we sort the repositories by repo_id to ensure consistent ordering across DNF4 and DNF5.
+            repos_sorted = sorted(repositories_by_id.values(), key=lambda x: x.repo_id)
+            repositories.extend(repos_sorted)
 
-            # NB: DNF5 solver returns packages in topological order, but the original DNF4 solver returns
-            # alphabetically sorted packages. To be consistent and match the original DNF4 solver behavior,
-            # we sort the packages alphabetically by full NEVRA.
-            # NB: the org.osbuild.rpm stage as generated by osbuild/images does not depend on the order of packages,
-            # because rpm gets the full package set at once and it will reorder the packages as needed when installing.
-            transaction_result.sort()
-            transactions_results.append(transaction_result)
+            # Something went wrong, but no error was generated by goal.resolve()
+            if len(args.transactions) > 0 and last_result_count == 0:
+                raise DepsolveError("Empty transaction results")
 
-        # NB: we sort the repositories by repo_id to ensure consistent ordering across DNF4 and DNF5.
-        repositories = list(repositories_by_id.values())
-        repositories.sort(key=lambda x: x.repo_id)
-
-        # Something went wrong, but no error was generated by goal.resolve()
-        if len(args.transactions) > 0 and len(transactions_results[-1]) == 0:
-            raise DepsolveError("Empty transaction results")
-
-        sbom = None
-        if args.sbom_request:
-            sbom = self._sbom_for_pkgset(last_dnf_transaction)
+            if args.sbom_request:
+                sbom_dict.update(self._sbom_for_pkgset(last_dnf_transaction))
 
         return model.DepsolveResult(
-            transactions=transactions_results,
+            transactions=transaction_iter(),
             repositories=repositories,
-            modules=None,  # DNF5 Solver does not support modules
-            sbom=sbom,
+            modules={},  # DNF5 Solver does not support modules
+            sbom=sbom_dict if args.sbom_request else None,
         )

@@ -370,52 +370,82 @@ class TestRepository:
 class TestDepsolveResult:
     """Tests for the DepsolveResult class"""
 
-    def test_equality(self):
-        result1 = DepsolveResult(
+    def test_consumption_gating(self):
+        """Properties raise RuntimeError before transactions are consumed."""
+        result = DepsolveResult(
             transactions=[
                 [Package("bash", "5.1", "1.fc43", "x86_64")],
-                [Package("zsh", "5.8", "1.fc43", "x86_64")],
             ],
             repositories=[Repository("fedora", baseurl=["http://example.com/r1"])],
-            modules={"module1": {"package": {"name": "module1", "stream": "8"}, "profiles": ["base"]}},
-            sbom={"sbom": "sbom document"}
+            modules={"module1": {"data": "test"}},
+            sbom={"sbom": "doc"},
         )
-        result2 = DepsolveResult(
-            transactions=[
-                [Package("bash", "5.1", "1.fc43", "x86_64")],
-                [Package("zsh", "5.8", "1.fc43", "x86_64")],
-            ],
-            repositories=[Repository("fedora", baseurl=["http://example.com/r1"])],
-            modules={"module1": {"package": {"name": "module1", "stream": "8"}, "profiles": ["base"]}},
-            sbom={"sbom": "sbom document"}
-        )
-        assert result1 == result2
-        assert hash(result1) == hash(result2)
+        with pytest.raises(RuntimeError, match="transactions have been fully iterated"):
+            _ = result.repositories
+        with pytest.raises(RuntimeError, match="transactions have been fully iterated"):
+            _ = result.modules
+        with pytest.raises(RuntimeError, match="transactions have been fully iterated"):
+            _ = result.sbom
 
-    def test_collections(self):
-        result1 = DepsolveResult(
-            transactions=[
-                [Package("bash", "5.1", "1.fc43", "x86_64")],
-            ],
-            repositories=[Repository("fedora", baseurl=["http://example.com/r1"])]
-        )
-        result2 = DepsolveResult(
-            transactions=[
-                [Package("bash", "5.1", "1.fc43", "x86_64")],
-            ],
-            repositories=[Repository("fedora", baseurl=["http://example.com/r1"])]
-        )
-        result3 = DepsolveResult(
+    def test_properties_after_iteration(self):
+        """Properties are accessible after transactions are consumed."""
+        repos = [Repository("fedora", baseurl=["http://example.com/r1"])]
+        modules = {"module1": {"data": "test"}}
+        sbom = {"sbom": "doc"}
+        result = DepsolveResult(
             transactions=[
                 [Package("bash", "5.1", "1.fc43", "x86_64")],
                 [Package("zsh", "5.8", "1.fc43", "x86_64")],
             ],
-            repositories=[Repository("fedora", baseurl=["http://example.com/r1"])]
+            repositories=repos,
+            modules=modules,
+            sbom=sbom,
         )
-        assert len({result1, result2, result3}) == 2
-        result_dict = {result1: "v1"}
-        result_dict[result2] = "v2"
-        assert len(result_dict) == 1 and result_dict[result1] == "v2"
+        consumed = list(result.transactions)
+        assert len(consumed) == 2
+        assert result.repositories is repos
+        assert result.modules is modules
+        assert result.sbom is sbom
+
+    def test_generator_input(self):
+        """Generator-based transactions work with consumption gating."""
+        repos = [Repository("fedora", baseurl=["http://example.com/r1"])]
+
+        def gen():
+            yield [Package("bash", "5.1", "1.fc43", "x86_64")]
+            yield [Package("zsh", "5.8", "1.fc43", "x86_64")]
+
+        result = DepsolveResult(transactions=gen(), repositories=repos)
+        with pytest.raises(RuntimeError, match="transactions have been fully iterated"):
+            _ = result.repositories
+        consumed = list(result.transactions)
+        assert len(consumed) == 2
+        assert result.repositories is repos
+        assert result.modules is None
+        assert result.sbom is None
+
+    def test_generator_side_effects(self):
+        """Generator can populate shared mutable references for repos."""
+        repos = []
+
+        def gen():
+            yield [Package("bash", "5.1", "1.fc43", "x86_64")]
+            repos.append(Repository("fedora", baseurl=["http://example.com/r1"]))
+
+        result = DepsolveResult(transactions=gen(), repositories=repos)
+        list(result.transactions)
+        assert len(result.repositories) == 1
+        assert result.repositories[0].repo_id == "fedora"
+
+    def test_empty_input(self):
+        """Empty transactions list works correctly."""
+        repos = [Repository("fedora", baseurl=["http://example.com/r1"])]
+        result = DepsolveResult(transactions=[], repositories=repos)
+        with pytest.raises(RuntimeError, match="transactions have been fully iterated"):
+            _ = result.repositories
+        consumed = list(result.transactions)
+        assert not consumed
+        assert result.repositories is repos
 
 
 class TestDumpResult:

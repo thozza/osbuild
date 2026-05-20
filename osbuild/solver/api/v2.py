@@ -7,7 +7,7 @@
 # was explicitly requested.
 
 import json
-from typing import Any, Dict, List, Set, TextIO
+from typing import Any, Dict, Iterable, List, Set, TextIO
 
 from osbuild.solver.exceptions import InvalidRequestError
 from osbuild.solver.model import (
@@ -155,7 +155,7 @@ def serialize_response_search(solver: str, result: SearchResult, writer: TextIO)
     writer.write("\n")
 
 
-def _transactions_to_disjoint_sets(transactions: List[List[Package]]) -> List[List[Package]]:
+def _transactions_to_disjoint_sets(transactions: Iterable[List[Package]]) -> List[List[Package]]:
     """
     Convert a list of transactions to a list of disjoint sets of packages.
 

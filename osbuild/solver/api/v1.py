@@ -95,7 +95,9 @@ def serialize_response_search(solver: str, result: SearchResult, writer: TextIO)
 
 
 def serialize_response_depsolve(solver: str, result: DepsolveResult, writer: TextIO) -> None:
-    last_transaction = result.transactions[-1] if result.transactions else []
+    last_transaction = []
+    for transaction in result.transactions:
+        last_transaction = transaction
     d = {
         "solver": solver,
         "packages": [_package_as_dict_depsolve(package) for package in last_transaction],

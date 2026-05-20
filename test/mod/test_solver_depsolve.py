@@ -45,10 +45,11 @@ def test_results_sorted(solver):
     )
     depsolve_result = solver.depsolve(depsolve_args)
 
-    assert len(depsolve_result.transactions) == len(depsolve_args.transactions)
+    transactions = list(depsolve_result.transactions)
+    assert len(transactions) == len(depsolve_args.transactions)
 
     last_transaction_result = set()
-    for transaction_result in depsolve_result.transactions:
+    for transaction_result in transactions:
         assert transaction_result == sorted(transaction_result)
         assert last_transaction_result.issubset(transaction_result)
         last_transaction_result = set(transaction_result)
@@ -77,6 +78,9 @@ def test_rhsm_flag_set_on_repositories(solver):
     )
     depsolve_result = solver.depsolve(depsolve_args)
 
+    # Consume transactions so that repositories become accessible
+    list(depsolve_result.transactions)
+
     # Verify repositories have correct rhsm flag
     repos_by_id = {repo.repo_id: repo for repo in depsolve_result.repositories}
     assert len(repos_by_id) == 3
@@ -104,7 +108,8 @@ def test_repoids_restricts_dependency_resolution(solver):
         ]
     )
     result = solver.depsolve(depsolve_args_ok)
-    assert len(result.transactions[0]) > 0
+    transactions = list(result.transactions)
+    assert len(transactions[0]) > 0
 
     # Now, restrict to only 'appstream'. The depsolve must fail because
     # vim's dependencies from 'baseos' are no longer available.
@@ -116,7 +121,7 @@ def test_repoids_restricts_dependency_resolution(solver):
         ]
     )
     with pytest.raises(DepsolveError, match="is filtered out by exclude filtering"):
-        solver.depsolve(depsolve_args_fail)
+        list(solver.depsolve(depsolve_args_fail).transactions)
 
 
 @pytest.mark.parametrize("solver", _SOLVER_CLASSES, indirect=True)
@@ -135,7 +140,8 @@ def test_exclude_specs_removes_packages(solver):
         ]
     )
     result = solver.depsolve(depsolve_args_ok)
-    assert len(result.transactions[0]) > 0
+    transactions = list(result.transactions)
+    assert len(transactions[0]) > 0
 
     # Now, exclude 'ncurses-libs' which is a dependency of 'bash'.
     # The depsolve must fail because the dependency cannot be satisfied.
@@ -145,7 +151,7 @@ def test_exclude_specs_removes_packages(solver):
         ]
     )
     with pytest.raises(DepsolveError, match="is filtered out by exclude filtering"):
-        solver.depsolve(depsolve_args_fail)
+        list(solver.depsolve(depsolve_args_fail).transactions)
 
 
 @pytest.mark.parametrize("solver", _SOLVER_CLASSES, indirect=True)
@@ -167,12 +173,13 @@ def test_exclude_specs_scoped_per_transaction(solver):
     )
     result = solver.depsolve(depsolve_args)
 
-    assert len(result.transactions) == 2
+    transactions = list(result.transactions)
+    assert len(transactions) == 2
 
     # 'pkg-with-no-deps' must NOT be in the first transaction result
-    first_pkg_names = {pkg.name for pkg in result.transactions[0]}
+    first_pkg_names = {pkg.name for pkg in transactions[0]}
     assert "pkg-with-no-deps" not in first_pkg_names
 
     # 'pkg-with-no-deps' must be in the second transaction result
-    second_pkg_names = {pkg.name for pkg in result.transactions[1]}
+    second_pkg_names = {pkg.name for pkg in transactions[1]}
     assert "pkg-with-no-deps" in second_pkg_names

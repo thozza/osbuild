@@ -10,7 +10,7 @@ import pytest
 from osbuild.solver.model import Checksum, Dependency, Package, Repository
 from osbuild.solver.request import DepsolveCmdArgs, DepsolveTransaction, SearchCmdArgs
 
-from .conftest import assert_dump_result_equal, assert_object_equal, instantiate_solver
+from .conftest import assert_depsolve_result_equal, assert_dump_result_equal, assert_object_equal, instantiate_solver
 
 # NB: for sanity testing specific packages, we need to use a local repository, to ensure stable 'remote_locations'
 # otherwise, the port number in the server URL would change between tests, causing the test to fail.
@@ -364,7 +364,7 @@ def test_dnf4_dnf5_depsolve_parity(tmp_path, repo_servers):
     dnf4_results = dnf4_solver.depsolve(depsolve_args)
     dnf5_results = dnf5_solver.depsolve(depsolve_args)
 
-    assert_object_equal(dnf4_results, dnf5_results)
+    assert_depsolve_result_equal(dnf4_results, dnf5_results)
 
 
 def test_dnf4_dnf5_dump_parity(tmp_path, repo_servers):
