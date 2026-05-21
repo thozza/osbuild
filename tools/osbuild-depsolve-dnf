@@ -42,6 +42,14 @@ else:
 
 
 def solve(request_dict: Dict[str, Any], writer: TextIO) -> Optional[Dict[str, Any]]:
+    """
+    Solve the given request and write the result to the given writer.
+
+    NOTE: serialize functions stream JSON directly to the writer. If an
+    exception occurs mid-stream, partial output will already have been
+    written. The caller must be aware that on error, the writer may
+    contain incomplete JSON followed by the error response.
+    """
     with tempfile.TemporaryDirectory() as persistdir:
         try:
             request = api.parse_request(request_dict)
